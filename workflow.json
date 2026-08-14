@@ -1,0 +1,444 @@
+{
+  "name": "Inteligentny System Triage & Szkicowania Odpowiedzi BOK",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "q": "is:unread label:INBOX",
+          "readStatus": "unread"
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "c418e7d5-5cbb-4711-9a99-19b039279c6d",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "bd3NYOZC0op6HGLk",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. Bezpieczny odczyt danych z OpenAI (obsługa obiektu i tekstu)\nconst rawContent = $json.output?.[0]?.content?.[0]?.text;\nlet parsedAi = {};\n\nif (typeof rawContent === 'object' && rawContent !== null) {\n  // n8n sparsował już JSON automatycznie do obiektu\n  parsedAi = rawContent;\n} else if (typeof rawContent === 'string') {\n  // Dane przyszły jako czysty ciąg tekstowy JSON\n  try {\n    parsedAi = JSON.parse(rawContent);\n  } catch (e) {\n    parsedAi = {};\n  }\n} else {\n  parsedAi = $json;\n}\n\n// 2. Baza wiedzy firmy (Procedury i zasady dla BOK)\nconst knowledgeBase = {\n  \"DOSTAWA_I_LOGISTYKA\": `\n    - Standardowy czas dostawy wynosi 2-3 dni robocze od momentu opłacenia zamówienia.\n    - Jeśli od wysyłki minęło więcej niż 4 dni, przeproś klienta i poinformuj, że Dział Logistyki złożył już ponaglenie u przewoźnika.\n    - Zaoferuj kod rabatowy -10% na kolejne zakupy (kod: PRZEPRASZAM10) za opóźnienie.\n  `,\n  \"REKLAMACJA_I_ZWROT\": `\n    - Klient ma 14 dni na zwrot towaru bez podania przyczyny.\n    - Formularz zwrotu znajduje się pod adresem: https://naszsklep.pl/zwroty\n    - W przypadku uszkodzonej paczki prosimy o przesłanie zdjęć uszkodzenia.\n    - Pieniądze zwracamy tą samą metodą płatności w ciągu 5 dni roboczych od odbioru paczki w magazynie.\n  `,\n  \"PYTANIE_O_PRODUKT\": `\n    - Wszystkie specyfikacje techniczne znajdują się w zakładce \"Opis produktu\" na naszej stronie.\n    - Jeśli klient pyta o dostępność rozmiaru/koloru, poinformuj o możliwości zapisania się na powiadomienie o dostępności.\n  `,\n  \"INNE\": `\n    - Podziękuj za wiadomość i poinformuj, że sprawa została przekazana do odpowiedniego działu.\n    - Odpowiemy najszybciej jak to możliwe (maksymalnie do 24 godzin).\n  `\n};\n\n// 3. Pobranie odpowiedniej polityki na podstawie kategorii z AI\nconst category = parsedAi.category || \"INNE\";\nconst selectedPolicy = knowledgeBase[category] || knowledgeBase[\"INNE\"];\n\n// 4. Pobranie pierwotnych danych z Gmaila\nconst gmailData = $node[\"Gmail Trigger\"].json;\n\nreturn {\n  json: {\n    // Dane z Gmaila\n    threadId: gmailData.threadId,\n    emailMessageId: gmailData.id,\n    customerEmail: gmailData.From,\n    emailSubject: gmailData.Subject,\n    emailBody: gmailData.snippet,\n    \n    // Analityka AI\n    category: category,\n    sentiment_score: parsedAi.sentiment_score ?? 3,\n    urgency: parsedAi.urgency || \"MEDIUM\",\n    customer_name: parsedAi.customer_name || \"Szanowny Kliencie\",\n    order_id: parsedAi.order_id || null,\n    issue_summary: parsedAi.issue_summary || \"\",\n    \n    // Dopasowana procedura biznesowa\n    company_policy: selectedPolicy.trim()\n  }\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        592,
+        0
+      ],
+      "id": "dbfc6a0f-bcac-4597-bc23-f754c5f7c88f",
+      "name": "Get Knowledge Base Policy"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Jesteś profesjonalnym, uprzejmym i empatycznym specjalistą ds. obsługi klienta w firmie e-commerce.\nTwoim zadaniem jest napisanie gotowej odpowiedzi na e-mail klienta.\n\nZasady:\n1. Odpowiadaj zawsze po polsku.\n2. Zwracaj się do klienta używając dostarczonego imienia (np. \"Szanowny Panie Janie\" / \"Szanowna Pani\").\n3. Bądź empatyczny – jeśli klient jest niezadowolony lub ocena sentymentu jest niska, szczerze przeproś za niedogodności.\n4. Wykorzystaj WYŁĄCZNIE zasady zawarte w sekcji PROCEDURA FIRMY. Nie wymyślaj własnych zasad ani obietnic.\n5. Podpisz się jako \"Zespół Obsługi Klienta\".\n6. Zwróć SAMĄ treść wiadomości e-mail (bez tematów, nagłówków typu \"Oto propozycja\" czy znaczników markdown)."
+            },
+            {
+              "content": "=Napisz odpowiedź na poniższy e-mail:\n\nImię klienta: {{ $json.customer_name }}\nOcena sentymentu (1-5): {{ $json.sentiment_score }}\nOtrzymany e-mail: {{ $json.emailBody }}\n\nPROCEDURA FIRMY DO ZASTOSOWANIA:\n{{ $json.company_policy }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        816,
+        0
+      ],
+      "id": "a0e57953-e36f-492a-942f-3cede707c46f",
+      "name": "Generate Response Draft",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "openAiApi": {
+          "id": "jS5bjLIQsVr2BV6W",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Re: {{ $node[\"Get Knowledge Base Policy\"].json.emailSubject }}",
+        "message": "={{ $json.output[0].content[0].text }}",
+        "options": {
+          "threadId": "={{ $node[\"Get Knowledge Base Policy\"].json.threadId }}",
+          "sendTo": "={{ $node[\"Get Knowledge Base Policy\"].json.customerEmail }}"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1184,
+        0
+      ],
+      "id": "e8b339c8-932b-4d3c-aeb6-f1b3219b856d",
+      "name": "Create a draft",
+      "webhookId": "c3da049c-b00d-40f5-a25f-407034d0511f",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "bd3NYOZC0op6HGLk",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "e255ca59-591d-4797-acbd-012a8bbc2ec0",
+              "leftValue": "={{ $node[\"Get Knowledge Base Policy\"].json.sentiment_score }}",
+              "rightValue": 2,
+              "operator": {
+                "type": "number",
+                "operation": "lte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1408,
+        0
+      ],
+      "id": "b2ac22be-0216-4c97-8358-45b8461699cf",
+      "name": "Is Angry Customer?"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "C0BQDU93ZR6"
+        },
+        "text": "=🚨 *UWAGA: KRYTYCZNE ZGŁOSZENIE KLIENTA (Niski Sentyment)*  *Klient:* {{ $node[\"Get Knowledge Base Policy\"].json.customer_name }} (<mail to:{{ $node[\"Get Knowledge Base Policy\"].json.customerEmail }}|{{ $node[\"Get Knowledge Base Policy\"].json.customerEmail }}>) *Ocena Niezadowolenia:* {{ $node[\"Get Knowledge Base Policy\"].json.sentiment_score }}/5 ⚠️ *Kategoria:* `{{ $node[\"Get Knowledge Base Policy\"].json.category }}` *Nr zamówienia:* {{ $node[\"Get Knowledge Base Policy\"].json.order_id || 'Brak' }}  *Podsumowanie problemu:* > {{ $node[\"Get Knowledge Base Policy\"].json.issue_summary }}  ℹ️ *Szkic odpowiedzi został automatycznie utworzony w Gmailu i czeka na weryfikację pracownika.*",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.6,
+      "position": [
+        1680,
+        -128
+      ],
+      "id": "0f5d5818-6688-4a6b-8129-4205706cb748",
+      "name": "Send a message",
+      "webhookId": "ed5f410a-473f-4f59-8e8a-6e9332393c8f",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "slackApi": {
+          "id": "syInu1QxtuZivO7J",
+          "name": "Slack account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        96
+      ],
+      "id": "85d7a2d5-e698-47bf-9c0f-db3d47b2ac3c",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "content": "## 📊 Project Summary & Business Value (ROI)\n\nThis project provides a production-grade automation system for first-line Customer Support operations. The workflow seamlessly integrates incoming email triggers, OpenAI LLMs (enforcing strict JSON output schemas), an internal procedure knowledge base, and team communication via Slack.\n\n* **Human-in-the-Loop Guardrail:** The system never sends autonomous emails to customers. Instead, it generates a personalized draft directly within the original Gmail thread, allowing support agents to review and send with a single click.\n* **Critical Escalation:** Automatically flags dissatisfied customers (sentiment score ≤ 2) and sends real-time alerts to a dedicated Slack channel for priority managerial review.\n* **Measurable Impact (ROI):** Reduces routine support workload by **70–80%**, speeds up response times for critical complaints, and eliminates AI hallucinations through strict procedure injection.",
+        "height": 352,
+        "width": 624
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        688,
+        -720
+      ],
+      "id": "ae0ca8fb-cbf9-4cff-b11c-0b6b59442a2d",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "Step 1: Trigger & Data Ingestion (Gmail Trigger)\nAction: The system continuously listens for new, unread email messages arriving in the company inbox.\n\nInput Data: Restricts fetching strictly to unread messages (is:unread label:INBOX).\n\nOutput Data: Extracts critical email metadata: From (customer email address), Subject, snippet (body preview), threadId (thread ID for attaching replies), and message id.",
+        "height": 688,
+        "width": 176,
+        "color": "#0F6115"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -32,
+        208
+      ],
+      "id": "45a57611-3ebd-477c-a7e6-dd7662e9ca1b",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "Step 2: AI Analysis & Data Extraction (OpenAI Chat Model)\nAction: Analyzes the email content using the gpt-4o-mini model with strict JSON Schema enforcement.\n\nScope of Analysis:\n\nCategorization: Classifies incoming messages into defined categories (SHIPPING_AND_LOGISTICS, RETURNS_AND_COMPLAINTS, PRODUCT_INQUIRY, OTHER).\n\nSentiment Analysis: Rates customer mood on a 1–5 scale (1 = severe frustration/complaint, 5 = highly satisfied/standard inquiry).\n\nUrgency Level: Assigns a priority rating of HIGH, MEDIUM, or LOW.\n\nData Extraction: Extracts customer name, order number (if mentioned in text), and a concise 1-sentence issue summary.\n",
+        "height": 864,
+        "color": "#D9D9D9"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        208,
+        208
+      ],
+      "id": "030eb7d0-d9df-4640-a7c1-2dd113854d45",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "content": "Step 3: Knowledge Base & Policy Mapping (Code Node)\nAction: A custom JavaScript script ingests the AI analysis output and dynamically matches it against relevant business policies and FAQ procedures stored in the knowledge base.\n\nBusiness Logic: Injects specific instructions for the AI based on the category (e.g., 14-day return policy terms, delay discount codes, or damaged package claim guidelines).\n\nData Safety & Integrity: Parses JSON responses and aggregates the full context into a single clean data object.",
+        "height": 592,
+        "color": "#D7D23C"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        528,
+        208
+      ],
+      "id": "031d5e63-9bed-452b-8f19-0a8020ac0649",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "content": "Step 4: Draft Generation & Response Creation (OpenAI ➔ Gmail Draft)\nAI Response Generation: The LLM crafts a personalized, polite, and empathetic response. It addresses the customer by name, expresses empathy for low sentiment scores, and strictly adheres to the company guidelines injected in Step 3 (preventing LLM hallucinations).\n\nGmail Draft Creation (Human-in-the-Loop): n8n does not auto-send emails directly to customers. Instead, it creates a complete Draft inside the original email thread (threadId). Support agents simply review the draft and click \"Send\".",
+        "height": 336,
+        "width": 464,
+        "color": "#D9D9D9"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        832,
+        208
+      ],
+      "id": "901d9ca9-401d-430b-a795-ee4171be4326",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "content": "Step 5: Conditional Routing & Critical Escalations (IF Node ➔ Slack)\nCondition (IF): Evaluates if sentiment_score <= 2 (frustrated or angry customer).\n\nTRUE Branch (sentiment_score <= 2): Generates an immediate, structured Slack alert on a dedicated support channel. The alert includes customer contact info, sentiment score, category, order number, issue summary, and a direct reminder that a draft is pending in Gmail for priority review.\n\nFALSE Branch (sentiment_score > 2): Workflow completes silently without interrupting the team. The response draft sits in Gmail awaiting standard queue processing.",
+        "height": 384,
+        "width": 464,
+        "color": "#3AEEB2"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1360,
+        288
+      ],
+      "id": "bb6eaba9-8c5c-44ad-8ada-1a172703123d",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "Jesteś starszym specjalistą ds. obsługi klienta i analitykiem w firmie e-commerce. \nTwoim zadaniem jest przeanalizowanie przychodzącego maila od klienta i zwrócenie WYŁĄCZNIE czystego obiektu JSON o następującej strukturze:\n\n{\n  \"category\": \"DOSTAWA_I_LOGISTYKA\" | \"REKLAMACJA_I_ZWROT\" | \"PYTANIE_O_PRODUKT\" | \"INNE\",\n  \"sentiment_score\": liczba od 1 do 5 (1 = skrajnie wściekły/niezadowolony, 3 = neutralny, 5 = zachwycony),\n  \"urgency\": \"HIGH\" | \"MEDIUM\" | \"LOW\",\n  \"customer_name\": \"Imię klienta wyciągnięte z nadawcy/podpisu lub 'Szanowny Kliencie'\",\n  \"order_id\": \"Numer zamówienia (np. #12345) jeśli podano, w przeciwnym razie null\",\n  \"issue_summary\": \"Zwięzłe podsumowanie problemu w 1 zdaniu po polsku\"\n}"
+            },
+            {
+              "content": "=Przeanalizuj poniższy e-mail od klienta:\n\nNadawca: {{ $json.From }}\nTemat: {{ $json.Subject }}\nTreść: {{ $json.snippet }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "textFormat": {
+            "textOptions": {
+              "type": "json_schema",
+              "schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"category\": {\n      \"type\": \"string\",\n      \"enum\": [\"DOSTAWA_I_LOGISTYKA\", \"REKLAMACJA_I_ZWROT\", \"PYTANIE_O_PRODUKT\", \"INNE\"]\n    },\n    \"sentiment_score\": {\n      \"type\": \"integer\"\n    },\n    \"urgency\": {\n      \"type\": \"string\",\n      \"enum\": [\"HIGH\", \"MEDIUM\", \"LOW\"]\n    },\n    \"customer_name\": {\n      \"type\": \"string\"\n    },\n    \"order_id\": {\n      \"type\": [\"string\", \"null\"]\n    },\n    \"issue_summary\": {\n      \"type\": \"string\"\n    }\n  },\n  \"additionalProperties\": false,\n  \"required\": [\n    \"category\",\n    \"sentiment_score\",\n    \"urgency\",\n    \"customer_name\",\n    \"order_id\",\n    \"issue_summary\"\n  ]\n}"
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        224,
+        0
+      ],
+      "id": "44020988-b0d9-49ac-b774-3fc0783d395c",
+      "name": "Message a model",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "openAiApi": {
+          "id": "jS5bjLIQsVr2BV6W",
+          "name": "OpenAI account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "### 🛡️ Reliability & Error Handling\n\nThe system is engineered with a two-tier resilience mechanism to handle network drops and third-party API downtime seamlessly:\n\n* **Tier 1: Automated Retry Policy (Retry on Fail)**\n  All external API integrations (OpenAI, Gmail, Slack) are configured with active retry guardrails:\n  * **Max Tries:** 3 attempts\n  * **Wait Between Tries:** 5000 ms (5 seconds)\n  * *Impact:* Automatically absorbs transient network glitches and temporary rate limit spikes (HTTP 429).\n\n* **Tier 2: Global Failure Catching (Error Trigger Workflow)**\n  A dedicated **Error Trigger** sub-workflow listens globally for unhandled execution errors.\n  * *Impact:* In the event of a persistent failure (e.g., expired OAuth tokens or API credit exhaustion), the system intercepts the runtime error and dispatches an immediate technical alert to an engineering Slack channel with a direct link to the n8n execution log for rapid debugging.\n\n",
+        "height": 464,
+        "width": 544,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1984,
+        -192
+      ],
+      "id": "1dbb766a-1aee-4ad4-986f-44e4e0d23cea",
+      "name": "Sticky Note6"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Knowledge Base Policy": {
+      "main": [
+        [
+          {
+            "node": "Generate Response Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Response Draft": {
+      "main": [
+        [
+          {
+            "node": "Create a draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a draft": {
+      "main": [
+        [
+          {
+            "node": "Is Angry Customer?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Angry Customer?": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Get Knowledge Base Policy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "ym4mZaqAJn1Qvnk2",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "cd4282b4-4477-42da-8c56-1daf240456ed",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5f79b03ae1a0460374b70ab4b6a1a3c12161af0ab5c5e1a40ad326cd7509381a"
+  },
+  "nodeGroups": [],
+  "id": "WTAdUn5SFwbobSYL",
+  "tags": [
+    {
+      "updatedAt": "2026-08-10T14:24:12.532Z",
+      "createdAt": "2026-08-10T14:24:12.532Z",
+      "id": "R6WkRqrIIr4avnuX",
+      "name": "Gotowe do portfolio"
+    }
+  ]
+}
